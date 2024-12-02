@@ -7,11 +7,20 @@ from langchain.llms import HuggingFaceHub
 from langchain.text_splitter import CharacterTextSplitter
 
 def main():
-        
+    # Initialize session state variables
+    if "json_content" not in st.session_state:
+        st.session_state["json_content"] = None
+    if "knowledge_base" not in st.session_state:
+        st.session_state["knowledge_base"] = None
+    if "user_question" not in st.session_state:
+        st.session_state["user_question"] = ""
+    if "retrieved_docs" not in st.session_state:
+        st.session_state["retrieved_docs"] = None
+    if "answers" not in st.session_state:
+        st.session_state["answers"] = {}
 
     # Set HuggingFace API Token
     os.environ["HUGGINGFACEHUB_API_TOKEN"] = "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"
-
 
     def extract_json_content(json_path):
         try:
@@ -62,6 +71,34 @@ def main():
         first_answer = full_answer.split("Answer:")[1].strip().split("\n")[0]
         return first_answer
 
+    def get_image_url_for_keyword(json_path, keyword):
+        """
+        Extracts the image URL and its source from the JSON file based on a partial keyword match in the caption.
+        """
+        try:
+            with open(json_path, 'r') as f:
+                data = json.load(f)
+            # Normalize the keyword for case-insensitive matching
+            keyword = keyword.lower().strip()
+
+            for key, value in data.items():
+                for entry in value:
+                    if isinstance(entry, dict) and "caption" in entry:
+                        # Normalize the caption
+                        normalized_caption = entry["caption"].lower()
+
+                        # Check if the keyword is in the normalized caption
+                        if keyword in normalized_caption:
+                            image_url = entry["images"][0] if entry.get("images") else None
+                            source = entry["caption"]
+                            return image_url, source
+            # If no match is found
+            return None, "No source available"
+        except Exception as e:
+            # Handle errors gracefully
+            return None, f"Error: {str(e)}"
+
+
     # Main Page Content
     st.title("DARIA-3o: Chatbot for InfoTunnel")
 
@@ -69,37 +106,65 @@ def main():
     json_path = "/Users/saivaruntanjoreraghavendra/Documents/json/scraped_content.json"
 
     # Load JSON content
-    json_content = extract_json_content(json_path)
-    if not json_content:
+    if st.session_state["json_content"] is None:
+        st.session_state["json_content"] = extract_json_content(json_path)
+
+    if not st.session_state["json_content"]:
         st.error("Failed to load JSON file. Please check the file path.")
     else:
-        knowledge_base = process_content(json_content)
+        if st.session_state["knowledge_base"] is None:
+            st.session_state["knowledge_base"] = process_content(st.session_state["json_content"])
         st.success("Knowledge Base loaded successfully!")
 
-        user_question = st.text_input("Ask a question about the content:")
+        # Handle general user questions
+        user_question = st.text_input("Ask your question:", value=st.session_state["user_question"])
         if user_question:
+            st.session_state["user_question"] = user_question
             with st.spinner("Generating answers..."):
-                # Retrieve documents once
-                retrieved_docs = knowledge_base.similarity_search(user_question, k=5)
+                retrieved_docs = st.session_state["knowledge_base"].similarity_search(user_question, k=5)
                 if retrieved_docs:
+                    st.session_state["retrieved_docs"] = retrieved_docs
                     context = "\n".join([doc.page_content for doc in retrieved_docs])
 
-                    # Generate answers using both models
                     microsoft_llm = load_model(repo_id="microsoft/Phi-3.5-mini-instruct")
                     microsoft_answer = generate_answer(microsoft_llm, context, user_question)
 
                     llama_llm = load_model(repo_id="meta-llama/Meta-Llama-3-8B-Instruct")
                     llama_answer = generate_answer(llama_llm, context, user_question)
 
-                    st.subheader("Answer from Microsoft Phi2")
-                    st.write(microsoft_answer)
+                    st.session_state["answers"] = {
+                        "Microsoft": microsoft_answer,
+                        "Llama": llama_answer
+                    }
 
-                    st.subheader("Answer from Meta LLaMA")
-                    st.write(llama_answer)
+        # Display results
+        if st.session_state["answers"]:
+            st.subheader("Answer from Microsoft Phi2")
+            st.write(st.session_state["answers"]["Microsoft"])
 
-                    st.subheader("Sources")
-                    with st.expander("View Sources"):
-                        for doc in retrieved_docs:
-                            st.write(f"- {doc.page_content[:200]}...")
+            st.subheader("Answer from Meta LLaMA")
+            st.write(st.session_state["answers"]["Llama"])
+
+        if st.session_state["retrieved_docs"]:
+            st.subheader("Sources")
+            with st.expander("View Sources"):
+                for doc in st.session_state["retrieved_docs"]:
+                    st.write(f"- {doc.page_content[:200]}...")
+
+        # Add image URL extraction to sidebar
+        st.sidebar.title("Image Search")
+        keyword_query = st.sidebar.text_input("Enter a keyword for image search:")
+        if keyword_query:
+            with st.spinner("Searching for image URL..."):
+                # Unpack the image URL and source
+                image_url, source = get_image_url_for_keyword(json_path, keyword_query)
+                if image_url:
+                    # Display the image and source
+                    st.sidebar.image(image_url)
+                    st.sidebar.markdown(f"{source}")
                 else:
-                    st.write("No relevant documents were found in the knowledge base.")
+                    st.sidebar.error("No image URL found for the given keyword.")
+
+
+if __name__ == "__main__":
+    main()
